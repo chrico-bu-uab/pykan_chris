@@ -10,12 +10,15 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import random
 import copy
+import pandas as pd
+from seaborn import heatmap
+
 RESOURCE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "figures")
 
 class KAN(nn.Module):
     '''
     KAN class
-    
+
     Attributes:
     -----------
         biases: a list of nn.Linear()
@@ -36,7 +39,7 @@ class KAN(nn.Module):
             Symbolic_KANLayers
         symbolic_enabled: bool
             If False, the symbolic front is not computed (to save time). Default: True.
-    
+
     Methods:
     --------
         __init__():
@@ -50,7 +53,7 @@ class KAN(nn.Module):
         forward():
             forward
         set_mode():
-            set the mode of an activation function: 'n' for numeric, 's' for symbolic, 'ns' for combined (note they are visualized differently in plot(). 'n' as black, 's' as red, 'ns' as purple). 
+            set the mode of an activation function: 'n' for numeric, 's' for symbolic, 'ns' for combined (note they are visualized differently in plot(). 'n' as black, 's' as red, 'ns' as purple).
         fix_symbolic():
             fix an activation function to be symbolic
         suggest_symbolic():
@@ -81,7 +84,7 @@ class KAN(nn.Module):
                  device='cpu', seed=0):
         '''
         initalize a KAN model
-        
+
         Args:
         -----
             width : list of int
@@ -95,7 +98,7 @@ class KAN(nn.Module):
             base_fun : fun
                 the residual function b(x). Default: torch.nn.SiLU().
             symbolic_enabled : bool
-                compute or skip symbolic computations (for efficiency). By default: True. 
+                compute or skip symbolic computations (for efficiency). By default: True.
             bias_trainable : bool
                 bias parameters are updated or not. By default: True
             grid_eps : float
@@ -110,11 +113,11 @@ class KAN(nn.Module):
                 device
             seed : int
                 random seed
-            
+
         Returns:
         --------
             self
-            
+
         Example
         -------
         >>> model = KAN(width=[2,5,1], grid=5, k=3)
@@ -161,24 +164,24 @@ class KAN(nn.Module):
 
         self.symbolic_fun = nn.ModuleList(self.symbolic_fun)
         self.symbolic_enabled = symbolic_enabled
-        
+
         self.device = device
 
     def initialize_from_another_model(self, another_model, x):
         '''
         initialize from a parent model. The parent has the same width as the current model but may have different grids.
-        
+
         Args:
         -----
             another_model : KAN
                 the parent model used to initialize the current model
             x : 2D torch.float
                 inputs, shape (batch, input dimension)
-        
+
         Returns:
         --------
             self : KAN
-            
+
         Example
         -------
         >>> model_coarse = KAN(width=[2,5,1], grid=5, k=3)
@@ -219,16 +222,16 @@ class KAN(nn.Module):
     def update_grid_from_samples(self, x):
         '''
         update grid from samples
-        
+
         Args:
         -----
             x : 2D torch.float
                 inputs, shape (batch, input dimension)
-            
+
         Returns:
         --------
             None
-         
+
         Example
         -------
         >>> model = KAN(width=[2,5,1], grid=5, k=3)
@@ -246,18 +249,18 @@ class KAN(nn.Module):
     def initialize_grid_from_another_model(self, model, x):
         '''
         initialize grid from a parent model
-        
+
         Args:
         -----
             model : KAN
                 parent model
             x : 2D torch.float
                 inputs, shape (batch, input dimension)
-            
+
         Returns:
         --------
             None
-        
+
         Example
         -------
         >>> model_parent = KAN(width=[1,1], grid=5, k=3)
@@ -277,17 +280,17 @@ class KAN(nn.Module):
     def forward(self, x):
         '''
         KAN forward
-        
+
         Args:
         -----
             x : 2D torch.float
                 inputs, shape (batch, input dimension)
-            
+
         Returns:
         --------
             y : 2D torch.float
                 outputs, shape (batch, output dimension)
-            
+
         Example
         -------
         >>> model = KAN(width=[2,5,3], grid=5, k=3)
@@ -336,8 +339,8 @@ class KAN(nn.Module):
 
     def set_mode(self, l, i, j, mode, mask_n=None):
         '''
-        set (l,i,j) activation to have mode 
-        
+        set (l,i,j) activation to have mode
+
         Args:
         -----
             l : int
@@ -350,7 +353,7 @@ class KAN(nn.Module):
                 'n' (numeric) or 's' (symbolic) or 'ns' (combined)
             mask_n : None or float)
                 magnitude of the numeric front
-        
+
         Returns:
         --------
             None
@@ -377,7 +380,7 @@ class KAN(nn.Module):
     def fix_symbolic(self, l, i, j, fun_name, fit_params_bool=True, a_range=(-10, 10), b_range=(-10, 10), verbose=True, random=False):
         '''
         set (l,i,j) activation to be symbolic (specified by fun_name)
-        
+
         Args:
         -----
             l : int
@@ -398,12 +401,12 @@ class KAN(nn.Module):
                 If True, more information is printed.
             random : bool
                 initialize affine parameteres randomly or as [1,0,1,0]
-        
+
         Returns:
         --------
             None or r2 (coefficient of determination)
-            
-        Example 1 
+
+        Example 1
         ---------
         >>> # when fit_params_bool = False
         >>> model = KAN(width=[2,5,1], grid=5, k=3)
@@ -414,7 +417,7 @@ class KAN(nn.Module):
                 [1., 1., 0., 1., 1.]])
         tensor([[0., 0., 0., 0., 0.],
                 [0., 0., 1., 0., 0.]])
-                    
+
         Example 2
         ---------
         >>> # when fit_params_bool = True
@@ -459,18 +462,18 @@ class KAN(nn.Module):
     def lock(self, l, ids):
         '''
         lock ids in the l-th layer to be the same function
-        
+
         Args:
         -----
             l : int
                 layer index
             ids : 2D list
                 :math:`[[i_1,j_1],[i_2,j_2],...]` set :math:`(l,i_i,j_1), (l,i_2,j_2), ...` to be the same function
-        
+
         Returns:
         --------
             None
-         
+
         Example
         -------
         >>> model = KAN(width=[2,3,1], grid=5, k=3, noise_scale=1.)
@@ -489,14 +492,14 @@ class KAN(nn.Module):
     def unlock(self, l, ids):
         '''
         unlock ids in the l-th layer to be the same function
-        
+
         Args:
         -----
             l : int
                 layer index
             ids : 2D list)
                 [[i1,j1],[i2,j2],...] set (l,ii,j1), (l,i2,j2), ... to be unlocked
-            
+
         Example:
         --------
         >>> model = KAN(width=[2,3,1], grid=5, k=3, noise_scale=1.)
@@ -516,7 +519,7 @@ class KAN(nn.Module):
     def get_range(self, l, i, j, verbose=True):
         '''
         Get the input range and output range of the (l,i,j) activation
-        
+
         Args:
         -----
             l : int
@@ -525,7 +528,7 @@ class KAN(nn.Module):
                 input neuron index
             j : int
                 output neuron index
-        
+
         Returns:
         --------
             x_min : float
@@ -536,7 +539,7 @@ class KAN(nn.Module):
                 minimum of output
             y_max : float
                 maximum of output
-        
+
         Example
         -------
         >>> model = KAN(width=[2,3,1], grid=5, k=3, noise_scale=1.)
@@ -561,7 +564,7 @@ class KAN(nn.Module):
     def plot(self, folder="./figures", beta=3, mask=False, mode="supervised", scale=0.5, tick=False, sample=False, in_vars=None, out_vars=None, title=None):
         '''
         plot KAN
-        
+
         Args:
         -----
             folder : str
@@ -580,11 +583,11 @@ class KAN(nn.Module):
                 the name(s) of output variables
             title: None or str
                 title
-            
+
         Returns:
         --------
             Figure
-            
+
         Example
         -------
         >>> # see more interactive examples in demos
@@ -759,8 +762,8 @@ class KAN(nn.Module):
         if title != None:
             plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.2, title, fontsize=40 * scale, horizontalalignment='center', verticalalignment='center')
 
-    def train(self, dataset, opt="LBFGS", steps=100, log=1, lamb=0., lamb_l1=1., lamb_entropy=2., lamb_coef=0., lamb_coefdiff=0., update_grid=True, grid_update_num=10, loss_fn=None, lr=1., stop_grid_update_step=50, batch=-1,
-              small_mag_threshold=1e-16, small_reg_factor=1., metrics=None, sglr_avoid=False, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video', device='cpu'):
+    def train(self, dataset, optimizer, steps=100, log=1, lamb=0., lamb_l1=1., lamb_entropy=2., lamb_coef=0., lamb_coefdiff=0., update_grid=True, grid_update_num=10, grid_update_freq=5, loss_fn=None, batch=-1,
+              small_mag_threshold=1e-16, small_reg_factor=1., metrics=None, sglr_avoid=False, save_fig=False, in_vars=None, out_vars=None, beta=3, save_fig_freq=1, img_folder='./video', device='cpu', offset=0):
         '''
         training
 
@@ -797,7 +800,7 @@ class KAN(nn.Module):
             small_reg_factor : float
                 penalty strength applied to small factors relative to large factos
             device : str
-                device   
+                device
             save_fig_freq : int
                 save figure every (save_fig_freq) step
 
@@ -841,19 +844,12 @@ class KAN(nn.Module):
 
             return reg_
 
-        pbar = tqdm(range(steps), desc='description', ncols=100)
+        pbar = tqdm(range(offset, offset + steps), desc='description', ncols=100) if log else range(steps)
 
         if loss_fn == None:
             loss_fn = loss_fn_eval = lambda x, y: torch.mean((x - y) ** 2)
         else:
             loss_fn = loss_fn_eval = loss_fn
-
-        grid_update_freq = int(stop_grid_update_step / grid_update_num)
-
-        if opt == "Adam":
-            optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        elif opt == "LBFGS":
-            optimizer = LBFGS(self.parameters(), lr=lr, history_size=10, line_search_fn="strong_wolfe", tolerance_grad=1e-32, tolerance_change=1e-32, tolerance_ys=1e-32)
 
         results = {}
         results['train_loss'] = []
@@ -865,10 +861,9 @@ class KAN(nn.Module):
 
         if batch == -1 or batch > dataset['train_input'].shape[0]:
             batch_size = dataset['train_input'].shape[0]
-            batch_size_test = dataset['test_input'].shape[0]
         else:
             batch_size = batch
-            batch_size_test = batch
+        batch_size_test = dataset['test_input'].shape[0]
 
         global train_loss, reg_
 
@@ -890,6 +885,8 @@ class KAN(nn.Module):
             if not os.path.exists(img_folder):
                 os.makedirs(img_folder)
 
+        stop_grid_update_step = grid_update_freq * grid_update_num
+
         for _ in pbar:
 
             train_id = np.random.choice(dataset['train_input'].shape[0], batch_size, replace=False)
@@ -898,33 +895,19 @@ class KAN(nn.Module):
             if _ % grid_update_freq == 0 and _ < stop_grid_update_step and update_grid:
                 self.update_grid_from_samples(dataset['train_input'][train_id].to(device))
 
-            if opt == "LBFGS":
-                optimizer.step(closure)
-
-            if opt == "Adam":
-                pred = self.forward(dataset['train_input'][train_id].to(device))
-                if sglr_avoid == True:
-                    id_ = torch.where(torch.isnan(torch.sum(pred, dim=1)) == False)[0]
-                    train_loss = loss_fn(pred[id_], dataset['train_label'][train_id][id_].to(device))
-                else:
-                    train_loss = loss_fn(pred, dataset['train_label'][train_id].to(device))
-                reg_ = reg(self.acts_scale)
-                loss = train_loss + lamb * reg_
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            optimizer.step(closure)
 
             test_loss = loss_fn_eval(self.forward(dataset['test_input'][test_id].to(device)), dataset['test_label'][test_id].to(device))
 
-            if _ % log == 0:
-                pbar.set_description("train loss: %.2e | test loss: %.2e | reg: %.2e " % (torch.sqrt(train_loss).cpu().detach().numpy(), torch.sqrt(test_loss).cpu().detach().numpy(), reg_.cpu().detach().numpy()))
+            if log and _ % log == 0:
+                pbar.set_description("train loss: %.2e | test loss: %.2e | reg: %.2e " % (train_loss.cpu().detach().numpy(), test_loss.cpu().detach().numpy(), reg_.cpu().detach().numpy()))
 
             if metrics != None:
                 for i in range(len(metrics)):
                     results[metrics[i].__name__].append(metrics[i]().item())
 
-            results['train_loss'].append(torch.sqrt(train_loss).cpu().detach().numpy())
-            results['test_loss'].append(torch.sqrt(test_loss).cpu().detach().numpy())
+            results['train_loss'].append(train_loss.cpu().detach().numpy())
+            results['test_loss'].append(test_loss.cpu().detach().numpy())
             results['reg'].append(reg_.cpu().detach().numpy())
 
             if save_fig and _ % save_fig_freq == 0:
@@ -937,7 +920,7 @@ class KAN(nn.Module):
     def prune(self, threshold=1e-2, mode="auto", active_neurons_id=None):
         '''
         pruning KAN on the node level. If a node has small incoming or outgoing connection, it will be pruned away.
-        
+
         Args:
         -----
             threshold : float
@@ -946,12 +929,12 @@ class KAN(nn.Module):
                 "auto" or "manual". If "auto", the thresold will be used to automatically prune away nodes. If "manual", active_neuron_id is needed to specify which neurons are kept (others are thrown away).
             active_neuron_id : list of id lists
                 For example, [[0,1],[0,2,3]] means keeping the 0/1 neuron in the 1st hidden layer and the 0/2/3 neuron in the 2nd hidden layer. Pruning input and output neurons is not supported yet.
-            
+
         Returns:
         --------
             model2 : KAN
                 pruned model
-         
+
         Example
         -------
         >>> # for more interactive examples, please see demos
@@ -984,6 +967,7 @@ class KAN(nn.Module):
         for l in range(len(self.acts_scale) - 1):
             for i in range(self.width[l + 1]):
                 if i not in active_neurons[l + 1]:
+                    print('remove node', l + 1, i)
                     self.remove_node(l + 1, i)
 
         model2 = KAN(copy.deepcopy(self.width), self.grid, self.k, base_fun=self.base_fun, device=self.device)
@@ -1001,7 +985,7 @@ class KAN(nn.Module):
     def remove_edge(self, l, i, j):
         '''
         remove activtion phi(l,i,j) (set its mask to zero)
-        
+
         Args:
         -----
             l : int
@@ -1010,7 +994,7 @@ class KAN(nn.Module):
                 input neuron index
             j : int
                 output neuron index
-        
+
         Returns:
         --------
             None
@@ -1020,14 +1004,14 @@ class KAN(nn.Module):
     def remove_node(self, l, i):
         '''
         remove neuron (l,i) (set the masks of all incoming and outgoing activation functions to zero)
-        
+
         Args:
         -----
             l : int
                 layer index
             i : int
                 neuron index
-        
+
         Returns:
         --------
             None
@@ -1039,26 +1023,26 @@ class KAN(nn.Module):
 
     def suggest_symbolic(self, l, i, j, a_range=(-10, 10), b_range=(-10, 10), lib=None, topk=5, verbose=True):
         '''suggest the symbolic candidates of phi(l,i,j)
-        
+
         Args:
         -----
             l : int
                 layer index
-            i : int 
+            i : int
                 input neuron index
-            j : int 
+            j : int
                 output neuron index
             lib : dic
-                library of symbolic bases. If lib = None, the global default library will be used. 
+                library of symbolic bases. If lib = None, the global default library will be used.
             topk : int
                 display the top k symbolic functions (according to r2)
             verbose : bool
                 If True, more information will be printed.
-           
+
         Returns:
         --------
             None
-            
+
         Example
         -------
         >>> model = KAN(width=[2,5,1], grid=5, k=3, noise_scale=0.1, seed=0)
@@ -1101,23 +1085,24 @@ class KAN(nn.Module):
         best_name = list(symbolic_lib.items())[sorted_ids[0]][0]
         best_fun = list(symbolic_lib.items())[sorted_ids[0]][1]
         best_r2 = r2s[0]
-        return best_name, best_fun, best_r2
+        second_best_r2 = r2s[1]
+        return best_name, best_fun, best_r2, second_best_r2
 
     def auto_symbolic(self, a_range=(-10, 10), b_range=(-10, 10), lib=None, verbose=1):
         '''
         automatic symbolic regression: using top 1 suggestion from suggest_symbolic to replace splines with symbolic activations
-        
+
         Args:
         -----
             lib : None or a list of function names
-                the symbolic library 
+                the symbolic library
             verbose : int
                 verbosity
-                
+
         Returns:
         --------
             None (print suggested symbolic formulas)
-            
+
         Example 1
         ---------
         >>> # default library
@@ -1132,7 +1117,7 @@ class KAN(nn.Module):
         fixing (0,0,0) with sin, r2=0.9994837045669556
         fixing (0,1,0) with cosh, r2=0.9978033900260925
         fixing (1,0,0) with arctan, r2=0.9997088313102722
-        
+
         Example 2
         ---------
         >>> # customized library
@@ -1154,7 +1139,7 @@ class KAN(nn.Module):
                     if self.symbolic_fun[l].mask[j, i] > 0.:
                         print(f'skipping ({l},{i},{j}) since already symbolic')
                     else:
-                        name, fun, r2 = self.suggest_symbolic(l, i, j, a_range=a_range, b_range=b_range, lib=lib, verbose=False)
+                        name, fun, r2, _ = self.suggest_symbolic(l, i, j, a_range=a_range, b_range=b_range, lib=lib, verbose=False)
                         self.fix_symbolic(l, i, j, name, verbose=verbose > 1)
                         if verbose >= 1:
                             print(f'fixing ({l},{i},{j}) with {name}, r2={r2}')
@@ -1162,7 +1147,7 @@ class KAN(nn.Module):
     def symbolic_formula(self, floating_digit=2, var=None, normalizer=None, simplify=False, output_normalizer = None ):
         '''
         obtain the symbolic formula
-        
+
         Args:
         -----
             floating_digit : int
@@ -1175,11 +1160,11 @@ class KAN(nn.Module):
                 If True, simplify the equation at each step (usually quite slow), so set up False by default.
             output_normalizer: [mean array (floats), varaince array (floats)]
                 the normalization applied to outputs
-            
+
         Returns:
         --------
             symbolic formula : sympy function
-        
+
         Example
         -------
         >>> model = KAN(width=[2,5,1], grid=5, k=3, noise_scale=0.1, seed=0, grid_eps=0.02)
@@ -1246,7 +1231,7 @@ class KAN(nn.Module):
 
             assert len(output_layer) == len(means), 'output_normalizer does not match the output layer'
             assert len(output_layer) == len(stds), 'output_normalizer does not match the output layer'
-            
+
             output_layer = [(output_layer[i] * stds[i] + means[i]) for i in range(len(output_layer))]
             symbolic_acts[-1] = output_layer
 
@@ -1260,13 +1245,13 @@ class KAN(nn.Module):
     def clear_ckpts(self, folder='./model_ckpt'):
         '''
         clear all checkpoints
-        
+
         Args:
         -----
             folder : str
                 the folder that stores checkpoints
-        
-        Returns:
+
+        Returns:`
         --------
             None
         '''
@@ -1277,17 +1262,17 @@ class KAN(nn.Module):
         else:
             os.makedirs(folder)
 
-    def save_ckpt(self, name, folder='./model_ckpt'):
+    def save_ckpt(self, name, folder='./model_ckpt', verbose=True):
         '''
         save the current model as checkpoint
-        
+
         Args:
         -----
             name: str
                 the name of the checkpoint to be saved
             folder : str
                 the folder that stores checkpoints
-               
+
         Returns:
         --------
             None
@@ -1297,21 +1282,560 @@ class KAN(nn.Module):
             os.makedirs(folder)
 
         torch.save(self.state_dict(), folder + '/' + name)
-        print('save this model to', folder + '/' + name)
+        if verbose:
+            print('save this model to', folder + '/' + name)
 
     def load_ckpt(self, name, folder='./model_ckpt'):
         '''
         load a checkpoint to the current model
-        
+
         Args:
         -----
             name: str
                 the name of the checkpoint to be loaded
             folder : str
                 the folder that stores checkpoints
-               
+
         Returns:
         --------
             None
         '''
         self.load_state_dict(torch.load(folder + '/' + name))
+
+
+def train_model(model, params, scorer, lr=1.0, opt="LBFGS", iters=1, retries=1,
+                prune_threshold=1e-2, plot=False, log=0):
+    if retries < 0:
+        return model
+
+    X_test = params["dataset"]["test_input"]
+    y_test = params["dataset"]["test_label"]
+    training = {"train_loss": [], "test_loss": [], "reg": []}
+    logits = model.forward(X_test)
+    best_loss = params["loss_fn"](logits, y_test)
+    best_score = scorer(y_test, logits)
+    best_score_loc = None
+
+    model.save_ckpt("best.pth", verbose=False)
+
+    warnings.filterwarnings("ignore")
+
+    offset = 0
+    errored = None
+    if opt == "Adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    elif opt == "LBFGS":
+        optimizer = LBFGS(model.parameters(), lr=lr, history_size=10, line_search_fn="strong_wolfe",
+                          tolerance_grad=1e-32, tolerance_change=1e-32, tolerance_ys=1e-32)
+    else:
+        raise ValueError(f"Unknown optimizer: {opt}")
+    for i in range(iters):
+        try:
+            # train model
+            results = model.train(optimizer=optimizer, offset=offset, log=log, **params)
+            offset += params.get("steps", 100)
+            for key, value in results.items():
+                training[key].extend(x.item() for x in value)
+            if np.isnan(training["test_loss"]).any():
+                print("NAN detected after initial training, exiting.")
+                break
+            else:
+                # model.save_ckpt("ckpt.pth")
+
+                # # prune
+                # model.prune(prune_threshold)
+                # if np.isnan(model.forward(X_test).detach().numpy()).any():
+                #     print("Pruning failed. Loading previous model.")
+                #     model.load_ckpt("ckpt.pth")
+                # else:
+                #     print("Pruning succeeded.")
+                #     model.save_ckpt("ckpt.pth")
+
+                # # auto symbolic
+                # autosym_model(model)
+                # if np.isnan(model.forward(X_test).detach().numpy()).any():
+                #     print("Auto Symbolic failed.")
+                #     model.load_ckpt("ckpt.pth")
+                # else:
+                #     print("Auto Symbolic succeeded.")
+                #     model.save_ckpt("ckpt.pth")
+
+                # # try training again
+                # results = model.train(optimizer=optimizer, offset=offset, **params)
+                # offset += params.get("steps", 100)
+                # for key, value in results.items():
+                #     training[key].extend(x.item() for x in value)
+                # if np.isnan(training["test_loss"]).any():
+                #     print("NAN detected after symbolic training, exiting.")
+                #     break
+                # else:
+                #     print("Symbolic training succeeded.")
+
+                logits = model.forward(X_test)
+                score = scorer(y_test, logits)
+                if score >= best_score or (score == best_score and training["test_loss"][-1] < best_loss):
+                    best_loss = training["test_loss"][-1]
+                    best_score = score
+                    best_score_loc = len(training["test_loss"]) - 1
+                    model.save_ckpt("best.pth", verbose=False)
+                    print(f"New best score: {score} (iter {i})")
+
+        except RuntimeError as e:
+            print(e)
+            errored = e
+            break
+
+    if errored is not None and retries:
+        model2 = CatLinKAN(model.X_train, width=model.width[1:], grid=model.grid, k=model.k,
+                           base_fun=model.base_fun, device=model.device, seed=model.seed)
+
+        # remove bad weights
+        state_dict = model.state_dict()
+        for key, state in state_dict.items():
+            nans = torch.isnan(state) | torch.isinf(state)
+            if nans.any():
+                print(f"Replacing {nans.sum()} NaNs/Infs in {key}.")
+                state_dict[key][nans] = 2 * torch.rand_like(state[nans]) - 1
+
+        model2.load_state_dict(state_dict)
+
+        return train_model(model2, params, scorer, lr=lr, opt=opt, iters=iters,
+                           retries=retries - 1, plot=plot, log=log)
+
+    warnings.filterwarnings("default")
+
+    model.load_ckpt("best.pth")
+
+    if plot:
+        plt.plot(training["train_loss"], label="train_loss")
+        plt.plot(training["test_loss"], label="test_loss")
+        # plt.plot(training["reg"], label="reg")
+        plt.legend()
+        if best_score_loc is not None:
+            plt.axvline(x=best_score_loc, color='r', linestyle='--')
+        plt.show()
+
+    return model
+
+
+def metamean(a: np.ndarray, t=1e-5, ignore_harm=True):
+    """
+    Inspired by xkcd's "Geothmetic Meandian" comic. Used to obtain embedding
+    dimensions for categorical features in the CatLinKAN model.
+    """
+    amean = np.mean(a)
+    gmean = np.prod(a) ** (1 / len(a))
+    if ignore_harm:
+        if abs(amean - gmean) < t:
+            return amean
+        return metamean(np.array([amean, gmean]), t)
+    else:
+        hmean = len(a) / np.sum(1 / a)
+        if abs(amean - hmean) < t:
+            return gmean
+        return metamean(np.array([amean, gmean, hmean]), t, False)
+
+
+class CatLinKAN(KAN):
+    def __init__(self, X_train: pd.DataFrame, **kwargs):
+        """
+        Extends the KAN model by implementing embeddings for categorical
+        features and adding a linear layer to generate linear combinations of
+        the concatenated input. It also includes a batchnorm layer to normalize
+        the numeric features.
+
+        Parameters:
+        X_train (pd.DataFrame): Training dataset used to identify categorical and numerical columns.
+        kwargs (dict): A dictionary of additional keyword arguments passed to the KAN model.
+
+        Example:
+        >>> from kan import CatLinKAN
+        >>> model = CatLinKAN(X_train)
+
+        """
+        self.X_train = X_train
+        self._init_columns(X_train)
+        self._get_embeddings_config()
+        super().__init__(**kwargs)
+        self._init_layers()
+
+    def _init_columns(self, X_train: pd.DataFrame):
+        """Initializes categorical and numerical columns and prepares category dictionaries."""
+        self.cat_cols = X_train.select_dtypes(include='object').columns.tolist()
+        self.num_cols = X_train.select_dtypes(include='number').columns.tolist()
+        self.cat_code_dict = {
+            col: {val: idx for idx, val in enumerate(X_train[col].astype('category').cat.categories, 1)}
+            for col in self.cat_cols
+        }
+        for col in self.cat_code_dict:
+            self.cat_code_dict[col][np.nan] = 0
+
+    def _get_embeddings_config(self):
+        """Initializes the embedding sizes and dimensions for each categorical column."""
+        self.embeddings_config = {}
+        for col, cat_dict in self.cat_code_dict.items():
+            num_categories = len(cat_dict)
+            embedding_dim = round(metamean(np.array([np.sqrt(num_categories - 1), (num_categories - 1) / 2])))
+            self.embeddings_config[col] = (num_categories, embedding_dim)
+
+    def _init_layers(self):
+        """Initializes the embeddings, batchnorm, and hidden layers of the model."""
+        self.embeddings = nn.ModuleDict({
+            col: nn.Embedding(num_embeddings, embedding_dim)
+            for col, (num_embeddings, embedding_dim) in self.embeddings_config.items()
+        })
+        for emb in self.embeddings.values():
+            # nn.init.xavier_normal_(emb.weight.data)
+            emb.weight.data[0] = 0
+            weight = emb.weight.data[1:]
+            fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(weight)
+            emb.weight.data[1:] -= weight.mean(dim=0)
+            emb.weight.data[1:] *= np.sqrt(2) / (fan_in + fan_out) / weight.std(dim=0)
+
+        n_num, n_cat = len(self.num_cols), sum(embed_dim for _, embed_dim in self.embeddings_config.values())
+        self.bn = nn.BatchNorm1d(n_num, affine=True)
+        self.hidden = nn.utils.parametrizations.weight_norm(nn.Linear(n_num + n_cat, self.width[0], bias=False))
+
+    def init_data(self, X: pd.DataFrame, y: pd.Series | None = None):
+        """
+        Initializes the input data by converting categorical columns to their respective codes and tensors.
+        """
+        X = X.copy()
+
+        for col in self.cat_cols:
+            X.loc[:, col] = X[col].map(self.cat_code_dict[col]).fillna(0).astype(np.int64)
+        X[self.cat_cols] = X[self.cat_cols].astype(np.int64)
+
+        # move cat columns to the left
+        X = pd.concat([X[self.cat_cols], X.drop(columns=self.cat_cols)], axis=1)
+
+        # convert to tensor and return
+        X = torch.tensor(X.values, dtype=torch.float64)
+        if y is None:
+            return X
+        y = torch.tensor(y.values, dtype=torch.long)
+        return X, y
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for emb in self.embeddings.values():
+            assert torch.all(emb.weight.data[0] == 0), "Embedding bias must be zero."
+
+        cat_tensor = torch.cat([self.embeddings[col](x[:, idx].long()) for idx, col in enumerate(self.cat_cols)], dim=1)
+        num_tensor = self.bn(x[:, len(self.cat_cols):])
+
+        out_tensor = torch.cat([cat_tensor, num_tensor], dim=1)
+        out_tensor = self.hidden(out_tensor)
+        return super().forward(out_tensor)
+
+    def get_in_vars(self) -> list:
+        """
+        Returns a list of input variable names.
+
+        Returns:
+        list: List of input variables including expanded categorical columns.
+        """
+        in_vars = [col.replace("_", " ") if " " not in col else col for col in self.num_cols]
+        for col in self.cat_cols:
+            n_dims = self.embeddings_config[col][1]
+            in_vars.extend(col.replace('_', ' ') + ("["+(len(str(n_dims))*"0"+str(i))[-len(str(n_dims)):]+"]"
+                                                    if n_dims > 1 else "") for i in range(n_dims))
+        return in_vars
+
+    def plot(self, folder="./figures", beta=3, mask=False, mode="supervised", scale=0.5, tick=False, sample=False, in_vars=None, out_vars=None, title=None):
+        """mostly the same as KAN.plot, but with additional linear layer"""
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        plt.style.use('dark_background')
+        depth = len(self.width) - 1
+        for l in range(depth):
+            w_large = 2.0
+            for i in range(self.width[l]):
+                for j in range(self.width[l + 1]):
+                    rank = torch.argsort(self.acts[l][:, i])
+                    fig, ax = plt.subplots(figsize=(w_large, w_large))
+
+                    num = rank.shape[0]
+
+                    symbol_mask = self.symbolic_fun[l].mask[j][i]
+                    numerical_mask = self.act_fun[l].mask.reshape(self.width[l + 1], self.width[l])[j][i]
+                    if symbol_mask > 0. and numerical_mask > 0.:
+                        color = 'purple'
+                        alpha_mask = 1
+                    if symbol_mask > 0. and numerical_mask == 0.:
+                        color = "red"
+                        alpha_mask = 1
+                    if symbol_mask == 0. and numerical_mask > 0.:
+                        color = "white"
+                        alpha_mask = 1
+                    if symbol_mask == 0. and numerical_mask == 0.:
+                        color = "black"
+                        alpha_mask = 0
+
+                    if tick == True:
+                        ax.tick_params(axis="y", direction="in", pad=-22, labelsize=50)
+                        ax.tick_params(axis="x", direction="in", pad=-15, labelsize=50)
+                        x_min, x_max, y_min, y_max = self.get_range(l, i, j, verbose=False)
+                        plt.xticks([x_min, x_max], ['%2.f' % x_min, '%2.f' % x_max])
+                        plt.yticks([y_min, y_max], ['%2.f' % y_min, '%2.f' % y_max])
+                    else:
+                        plt.xticks([])
+                        plt.yticks([])
+                    if alpha_mask == 1:
+                        plt.gca().patch.set_edgecolor('white')
+                    else:
+                        plt.gca().patch.set_edgecolor('black')
+                    plt.gca().patch.set_linewidth(1.5)
+                    # plt.axis('off')
+
+                    plt.plot(self.acts[l][:, i][rank].cpu().detach().numpy(),
+                             self.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color, lw=5)
+                    if sample == True:
+                        plt.scatter(self.acts[l][:, i][rank].cpu().detach().numpy(),
+                                    self.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color,
+                                    s=400 * scale ** 2)
+                    plt.gca().spines[:].set_color(color)
+
+                    lock_id = self.act_fun[l].lock_id[j * self.width[l] + i].long().item()
+                    if lock_id > 0:
+                        # im = plt.imread(f'{folder}/lock.png')
+                        im = plt.imread(f'{RESOURCE_DIR}/lock.png')
+                        newax = fig.add_axes([0.15, 0.7, 0.15, 0.15])
+                        plt.text(500, 400, lock_id, fontsize=15)
+                        newax.imshow(im)
+                        newax.axis('off')
+
+                    plt.savefig(f'{folder}/sp_{l}_{i}_{j}.png', bbox_inches="tight", dpi=400)
+                    plt.close()
+
+        def score2alpha(score):
+            return score if beta is None else np.tanh(beta * score)
+
+        if mode == "supervised":
+            alpha = [score2alpha(score.cpu().detach().numpy()) for score in self.acts_scale]
+        elif mode == "unsupervised":
+            alpha = [score2alpha(score.cpu().detach().numpy()) for score in self.acts_scale_std]
+        else:
+            raise ValueError("mode should be supervised or unsupervised")
+
+        if beta is None:
+            # discretize alpha by layer
+            for l in range(depth):
+                la = []
+                ij = []
+                for i in range(self.width[l]):
+                    for j in range(self.width[l + 1]):
+                        la.append(alpha[l][j][i])
+                        ij.append((i, j))
+                la = np.argsort(la) + (len(la) - 1) * 0.06
+                la /= la.max()
+                for _, (i, j) in enumerate(ij):
+                    alpha[l][j][i] = torch.tensor(la[_]).double()
+        else:
+            # normalize by layer
+            for l in range(depth):
+                denom = 0
+                for i in range(self.width[l]):
+                    for j in range(self.width[l + 1]):
+                        denom = max(denom, alpha[l][j][i])
+                for i in range(self.width[l]):
+                    for j in range(self.width[l + 1]):
+                        alpha[l][j][i] = (alpha[l][j][i] + 0.06) / (denom + 0.06)
+
+        # draw skeleton
+        width = np.array(self.width)
+        A = 1
+        y0 = 0.4  # 0.4
+
+        # plt.figure(figsize=(5,5*(neuron_depth-1)*y0))
+        neuron_depth = len(width)
+        min_spacing = A / np.maximum(np.max(width), 5)
+
+        max_neuron = np.max(width)
+        max_num_weights = np.max(width[:-1] * width[1:])
+        y1 = 0.4 / np.maximum(max_num_weights, 3)
+
+        fig, ax = plt.subplots(figsize=(10 * scale, 10 * scale * (neuron_depth + 1) * y0))
+        # fig, ax = plt.subplots(figsize=(5,5*(neuron_depth-1)*y0))
+
+        # plot scatters and lines
+        for l in range(neuron_depth):
+            n = width[l]
+            spacing = A / n
+            for i in range(n):
+                plt.scatter(1 / (2 * n) + i / n, l * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+
+                if l < neuron_depth - 1:
+                    # plot connections
+                    n_next = width[l + 1]
+                    N = n * n_next
+                    for j in range(n_next):
+                        id_ = i * n_next + j
+
+                        symbol_mask = self.symbolic_fun[l].mask[j][i]
+                        numerical_mask = self.act_fun[l].mask.reshape(self.width[l + 1], self.width[l])[j][i]
+                        if symbol_mask == 1. and numerical_mask == 1.:
+                            color = 'purple'
+                            alpha_mask = 1.
+                        if symbol_mask == 1. and numerical_mask == 0.:
+                            color = "red"
+                            alpha_mask = 1.
+                        if symbol_mask == 0. and numerical_mask == 1.:
+                            color = "white"
+                            alpha_mask = 1.
+                        if symbol_mask == 0. and numerical_mask == 0.:
+                            color = "black"
+                            alpha_mask = 0.
+                        if mask == True:
+                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1], color=color, lw=2 * scale, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
+                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next], [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
+                        else:
+                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1], color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
+                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next], [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
+
+        plt.xlim(-0.1, 1.1)
+        plt.ylim(-0.8 * y0, (neuron_depth - 0.95) * y0)
+
+        if in_vars is None:
+            in_vars = self.get_in_vars()
+
+        pos_color = (0.0, 1.0, 0.0)
+        neg_color = (1.0, 0.0, 0.0)
+
+        # Plot numeric input and embedding nodes
+        n_in = len(in_vars)
+        n_hidden = width[0]
+        alphaz = np.array([self.hidden[1].weight.data[j, i].item() for i in range(n_in) for j in range(n_hidden)])
+        alphaz /= np.std(alphaz)
+        for i in range(n_in):
+            for j in range(n_hidden):
+                alphz = np.tanh(alphaz[j * n_in + i]) / n_hidden
+                color = pos_color if alphz > 0 else neg_color
+                plt.plot([i / n_in + 0.5 / n_in, 1 / (2 * n_hidden) + j / n_hidden],
+                         [-0.5 * y0, 0], color=color, lw=2 * scale, alpha=abs(alphz))
+            plt.scatter(1 / (2 * n_in) + i / n_in, -0.5 * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color="white")
+
+        n = width[0]
+        spacing = A / n
+        for i in range(n):
+            plt.scatter(1 / (2 * n) + i / n, 0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+
+        # -- Transformation functions
+        DC_to_FC = ax.transData.transform
+        FC_to_NFC = fig.transFigure.inverted().transform
+        # -- Take data coordinates and transform them to normalized figure coordinates
+        DC_to_NFC = lambda x: FC_to_NFC(DC_to_FC(x))
+
+        plt.axis('off')
+
+        # plot splines
+        for l in range(neuron_depth - 1):
+            n = width[l]
+            for i in range(n):
+                n_next = width[l + 1]
+                N = n * n_next
+                for j in range(n_next):
+                    id_ = i * n_next + j
+                    im = plt.imread(f'{folder}/sp_{l}_{i}_{j}.png')
+                    left = DC_to_NFC([1 / (2 * N) + id_ / N - y1, 0])[0]
+                    right = DC_to_NFC([1 / (2 * N) + id_ / N + y1, 0])[0]
+                    bottom = DC_to_NFC([0, (l + 1 / 2) * y0 - y1])[1]
+                    up = DC_to_NFC([0, (l + 1 / 2) * y0 + y1])[1]
+                    newax = fig.add_axes([left, bottom, right - left, up - bottom])
+                    # newax = fig.add_axes([1/(2*N)+id_/N-y1, (l+1/2)*y0-y1, y1, y1], anchor='NE')
+                    if mask == False:
+                        newax.imshow(im, alpha=alpha[l][j][i])
+                    else:
+                        ### make sure to run model.prune() first to compute mask ###
+                        newax.imshow(im, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
+                    newax.axis('off')
+
+        if out_vars != None:
+            n = self.width[-1]
+            for i in range(n):
+                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), y0 * (len(self.width) - 1) + 0.01, out_vars[i], fontsize=5 * scale, horizontalalignment='center', verticalalignment='center')
+
+        if title != None:
+            plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.03, title, fontsize=20 * scale, horizontalalignment='center', verticalalignment='center')
+
+        for i in range(n_in):
+            plt.gcf().get_axes()[0].text(1 / (2 * n_in) + i / n_in, -0.51 * y0, in_vars[i], fontsize=2.5 * scale, horizontalalignment='right', verticalalignment='center', rotation=90, rotation_mode='anchor')
+
+    def plot_embeddings(self, cmap="vlag", path=None):
+        """
+        Plots the categorical embeddings in a heatmap and 2D space using PCA or t-SNE.
+        """
+        cat_codes_dict_inv = {col: {v: k for k, v in self.cat_code_dict[col].items()} for col in self.cat_code_dict}
+        # plot the embeddings in a heatmap
+        N, D = zip(*self.embeddings_config.values())
+        n, d = max(N), max(D)
+        fig, axes = plt.subplots(len(self.cat_cols), 1, figsize=(d, n / 2), gridspec_kw={
+            "height_ratios": [len(cat_codes_dict_inv[col]) for col in self.cat_cols]})
+        for i, col in enumerate(self.cat_cols):
+            data = self.embeddings[col].weight.detach().numpy()
+            data = pd.DataFrame(data, index=[cat_codes_dict_inv[col][i] for i in range(data.shape[0])])
+            data_norm = (data - data.mean()) / data.std()
+            ax = axes[i]
+            heatmap(data=data_norm, cmap=cmap, annot=data, fmt=".4f", ax=ax, cbar=False)
+            ax.set_ylabel(col)
+            ax.set_xlabel("Embedding dimension")
+        plt.tight_layout()
+        if path is not None:
+            plt.savefig(os.path.join(path, "categorical_embeddings.png"), bbox_inches="tight", dpi=300)
+        plt.show()
+        # plot the embedding in 2d space using PCA or t-SNE
+        from sklearn.decomposition import PCA
+        fig, axes = plt.subplots(1, len(self.cat_cols), figsize=(24, 6))
+        for i, col in enumerate(self.cat_cols):
+            data = self.embeddings[col].weight.detach().numpy()
+            pca = PCA(n_components=2)
+            data_pca = pca.fit_transform(data)
+            ax = axes[i]
+            ax.scatter(data_pca[:, 0], data_pca[:, 1])
+            for j, txt in enumerate([cat_codes_dict_inv[col][i] for i in range(data.shape[0])]):
+                ax.annotate(txt, (data_pca[j, 0], data_pca[j, 1]))
+            ax.set_title(col)
+        plt.tight_layout()
+        if path is not None:
+            plt.savefig(os.path.join(path, "categorical_embeddings_pca.png"), bbox_inches="tight", dpi=300)
+        plt.show()
+
+    def prune(self, threshold=1e-2, mode="auto", active_neurons_id=None):
+        """TODO"""
+        mask = [torch.ones(self.width[0], )]
+        active_neurons = [list(range(self.width[0]))]
+        for i in range(len(self.acts_scale) - 1):
+            if mode == "auto":
+                in_important = torch.max(self.acts_scale[i], dim=1)[0] > threshold
+                out_important = torch.max(self.acts_scale[i + 1], dim=0)[0] > threshold
+                overall_important = in_important * out_important
+            elif mode == "manual":
+                overall_important = torch.zeros(self.width[i + 1], dtype=torch.bool)
+                overall_important[active_neurons_id[i + 1]] = True
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
+            mask.append(overall_important.float())
+            active_neurons.append(torch.where(overall_important == True)[0])
+        active_neurons.append(list(range(self.width[-1])))
+        mask.append(torch.ones(self.width[-1], ))
+
+        self.mask = mask  # this is neuron mask for the whole model
+
+        # update act_fun[l].mask
+        for l in range(len(self.acts_scale) - 1):
+            for i in range(self.width[l + 1]):
+                if i not in active_neurons[l + 1]:
+                    print('remove node', l + 1, i)
+                    self.remove_node(l + 1, i)
+
+        model2 = CatLinKAN(self.X_train, width=self.width, grid=self.grid, k=self.k,
+                                         base_fun=self.base_fun, device=self.device)
+        model2.load_state_dict(self.state_dict())
+        for i in range(len(self.acts_scale)):
+            if i < len(self.acts_scale) - 1:
+                model2.biases[i].weight.data = model2.biases[i].weight.data[:, active_neurons[i + 1]]
+
+            model2.act_fun[i] = model2.act_fun[i].get_subset(active_neurons[i], active_neurons[i + 1])
+            model2.width[i] = len(active_neurons[i])
+            model2.symbolic_fun[i] = self.symbolic_fun[i].get_subset(active_neurons[i], active_neurons[i + 1])
+
+        return model2

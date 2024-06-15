@@ -134,7 +134,32 @@ def curve2coef(x_eval, y_eval, grid, k, device="cpu"):
     '''
     # x_eval: (size, batch); y_eval: (size, batch); grid: (size, grid); k: scalar
     mat = B_batch(x_eval, grid, k, device=device).permute(0, 2, 1)
-    # coef = torch.linalg.lstsq(mat, y_eval.unsqueeze(dim=2)).solution[:, :, 0]
-    coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device),
-                              driver='gelsy' if device == 'cpu' else 'gels').solution[:, :, 0]
+    # # coef = torch.linalg.lstsq(mat, y_eval.unsqueeze(dim=2)).solution[:, :, 0]
+    # coef = torch.linalg.lstsq(mat.to(device), y_eval.unsqueeze(dim=2).to(device),
+    #                           driver='gelsy' if device == 'cpu' else 'gels').solution[:, :, 0]
+
+    lambda_reg = 1e-5
+    batch_size, rows, cols = mat.shape
+
+    # Placeholder for coefficients
+    coef = torch.zeros((batch_size, cols), device=device)
+
+    # Iterate over each batch
+    for i in range(batch_size):
+        # Extract the i-th batch
+        mat_batch = mat[i].to(device)
+        y_eval_batch = y_eval[i].to(device)
+
+        # Regularization
+        I = torch.eye(mat_batch.size(1), device=device)  # Identity matrix
+        mat_reg = mat_batch.T @ mat_batch + lambda_reg * I
+        y_reg = mat_batch.T @ y_eval_batch.unsqueeze(dim=1)
+
+        # Perform least squares computation with exception handling
+        try:
+            batch_coef = torch.linalg.lstsq(mat_reg, y_reg, driver='gelsy' if device == 'cpu' else 'gels').solution[:, 0]
+            coef[i] = batch_coef
+        except RuntimeError as e:
+            raise RuntimeError(f"Error during least squares computation in batch {i}: {e}")
+
     return coef.to(device)

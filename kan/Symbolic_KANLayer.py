@@ -24,10 +24,10 @@ class Symbolic_KANLayer(nn.Module):
             symbolic functions (sympy)
         affine: 3D array of floats
             affine transformations of inputs and outputs
-        
+
     Methods:
     --------
-        __init__(): 
+        __init__():
             initialize a Symbolic_KANLayer
         forward():
             forward
@@ -39,7 +39,7 @@ class Symbolic_KANLayer(nn.Module):
     def __init__(self, in_dim=3, out_dim=2, device='cpu'):
         '''
         initialize a Symbolic_KANLayer (activation functions are initialized to be identity functions)
-        
+
         Args:
         -----
             in_dim : int
@@ -48,11 +48,11 @@ class Symbolic_KANLayer(nn.Module):
                 output dimension
             device : str
                 device
-            
+
         Returns:
         --------
             self
-            
+
         Example
         -------
         >>> sb = Symbolic_KANLayer(in_dim=3, out_dim=3)
@@ -69,12 +69,12 @@ class Symbolic_KANLayer(nn.Module):
         self.funs_name = [['' for i in range(self.in_dim)] for j in range(self.out_dim)]
         # sympy
         self.funs_sympy = [['' for i in range(self.in_dim)] for j in range(self.out_dim)]
-        
+
         self.affine = torch.nn.Parameter(torch.zeros(out_dim, in_dim, 4, device=device))
         # c*f(a*x+b)+d
-        
+
         self.device = device
-    
+
     def forward(self, x):
         '''
         forward
