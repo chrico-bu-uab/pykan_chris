@@ -1251,7 +1251,7 @@ class KAN(nn.Module):
             folder : str
                 the folder that stores checkpoints
 
-        Returns:`
+        Returns:
         --------
             None
         '''
@@ -1303,11 +1303,8 @@ class KAN(nn.Module):
         self.load_state_dict(torch.load(folder + '/' + name))
 
 
-def train_model(model, params, scorer, lr=1.0, opt="LBFGS", iters=1, retries=1,
+def train_model(model, params, scorer, lr=1.0, opt="LBFGS", iters=1,
                 prune_threshold=1e-2, plot=False, log=0):
-    if retries < 0:
-        return model
-
     X_test = params["dataset"]["test_input"]
     y_test = params["dataset"]["test_label"]
     training = {"train_loss": [], "test_loss": [], "reg": []}
@@ -1382,25 +1379,7 @@ def train_model(model, params, scorer, lr=1.0, opt="LBFGS", iters=1, retries=1,
 
         except RuntimeError as e:
             print(e)
-            errored = e
             break
-
-    if errored is not None and retries:
-        model2 = CatLinKAN(model.X_train, width=model.width[1:], grid=model.grid, k=model.k,
-                           base_fun=model.base_fun, device=model.device, seed=model.seed)
-
-        # remove bad weights
-        state_dict = model.state_dict()
-        for key, state in state_dict.items():
-            nans = torch.isnan(state) | torch.isinf(state)
-            if nans.any():
-                print(f"Replacing {nans.sum()} NaNs/Infs in {key}.")
-                state_dict[key][nans] = 2 * torch.rand_like(state[nans]) - 1
-
-        model2.load_state_dict(state_dict)
-
-        return train_model(model2, params, scorer, lr=lr, opt=opt, iters=iters,
-                           retries=retries - 1, plot=plot, log=log)
 
     warnings.filterwarnings("default")
 
@@ -1434,10 +1413,43 @@ def metamean(a: np.ndarray, t=1e-5, ignore_harm=True):
         if abs(amean - hmean) < t:
             return gmean
         return metamean(np.array([amean, gmean, hmean]), t, False)
+    
 
+def embedded_dropout(embed, dropout=0.1, scale=None):
+  """
+  https://github.com/salesforce/awd-lstm-lm/blob/32fcb42562aeb5c7e6c9dec3f2a3baaaf68a5cb5/embed_regularize.py#L5
+  """
+  if dropout:
+    mask = embed.weight.data.new().resize_((embed.weight.size(0), 1)).bernoulli_(1 - dropout).expand_as(embed.weight) / (1 - dropout)
+    masked_embed_weight = mask * embed.weight
+  else:
+    masked_embed_weight = embed.weight
+  if scale:
+    masked_embed_weight = scale.expand_as(masked_embed_weight) * masked_embed_weight
+
+  # padding_idx = embed.padding_idx
+  # if padding_idx is None:
+  #     padding_idx = -1
+
+  # X = torch.nn.functional.embedding(words, masked_embed_weight,
+  #   padding_idx, embed.max_norm, embed.norm_type,
+  #   embed.scale_grad_by_freq, embed.sparse
+  # )
+  X = nn.Embedding(embed.num_embeddings, embed.embedding_dim, _weight=masked_embed_weight)
+  return X
+
+
+class Identity(nn.Linear):
+    def __init__(self):
+        super().__init__(1, 1)
+        self.weight.data.fill_(1)
+        self.bias.data.fill_(0)
+
+    def forward(self, x):
+        return x
 
 class CatLinKAN(KAN):
-    def __init__(self, X_train: pd.DataFrame, **kwargs):
+    def __init__(self, X_train: pd.DataFrame, cat_dropout=0.0, include_linear=False, **kwargs):
         """
         Extends the KAN model by implementing embeddings for categorical
         features and adding a linear layer to generate linear combinations of
@@ -1454,8 +1466,13 @@ class CatLinKAN(KAN):
 
         """
         self.X_train = X_train
+        self.include_linear = include_linear
+        self.cat_dropout = cat_dropout
         self._init_columns(X_train)
         self._get_embeddings_config()
+        if not include_linear:
+            n_num, n_cat = len(self.num_cols), sum(n for _, n in self.embeddings_config.values())
+            kwargs["width"] = [n_cat + n_num] + kwargs["width"]
         super().__init__(**kwargs)
         self._init_layers()
 
@@ -1480,21 +1497,24 @@ class CatLinKAN(KAN):
 
     def _init_layers(self):
         """Initializes the embeddings, batchnorm, and hidden layers of the model."""
-        self.embeddings = nn.ModuleDict({
-            col: nn.Embedding(num_embeddings, embedding_dim)
+        embed = nn.ModuleDict({
+            col: embedded_dropout(nn.Embedding(num_embeddings, embedding_dim),
+                                  dropout=self.cat_dropout)
             for col, (num_embeddings, embedding_dim) in self.embeddings_config.items()
         })
-        for emb in self.embeddings.values():
+        for emb in embed.values():
             # nn.init.xavier_normal_(emb.weight.data)
             emb.weight.data[0] = 0
             weight = emb.weight.data[1:]
             fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(weight)
             emb.weight.data[1:] -= weight.mean(dim=0)
             emb.weight.data[1:] *= np.sqrt(2) / (fan_in + fan_out) / weight.std(dim=0)
+        self.embeddings = embed
 
-        n_num, n_cat = len(self.num_cols), sum(embed_dim for _, embed_dim in self.embeddings_config.values())
-        self.bn = nn.BatchNorm1d(n_num, affine=True)
-        self.hidden = nn.utils.parametrizations.weight_norm(nn.Linear(n_num + n_cat, self.width[0], bias=False))
+        if self.include_linear:
+            n_num, n_cat = len(self.num_cols), sum(embed_dim for _, embed_dim in self.embeddings_config.values())
+            self.bn = nn.BatchNorm1d(n_num, affine=True)
+            self.hidden = nn.utils.parametrizations.weight_norm(nn.Linear(n_num + n_cat, self.width[0], bias=False))
 
     def init_data(self, X: pd.DataFrame, y: pd.Series | None = None):
         """
@@ -1513,18 +1533,20 @@ class CatLinKAN(KAN):
         X = torch.tensor(X.values, dtype=torch.float64)
         if y is None:
             return X
-        y = torch.tensor(y.values, dtype=torch.long)
+        y = torch.tensor(y.values, dtype=torch.long if self.width[-1] > 1 else torch.float64)
         return X, y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for emb in self.embeddings.values():
-            assert torch.all(emb.weight.data[0] == 0), "Embedding bias must be zero."
+            emb.weight.data[0] = torch.mean(emb.weight.data[1:], dim=0)
 
         cat_tensor = torch.cat([self.embeddings[col](x[:, idx].long()) for idx, col in enumerate(self.cat_cols)], dim=1)
-        num_tensor = self.bn(x[:, len(self.cat_cols):])
-
+        num_tensor = x[:, len(self.cat_cols):]
+        if self.include_linear:
+            num_tensor = self.bn(num_tensor)
         out_tensor = torch.cat([cat_tensor, num_tensor], dim=1)
-        out_tensor = self.hidden(out_tensor)
+        if self.include_linear:
+            out_tensor = self.hidden(out_tensor)
         return super().forward(out_tensor)
 
     def get_in_vars(self) -> list:
@@ -1534,14 +1556,16 @@ class CatLinKAN(KAN):
         Returns:
         list: List of input variables including expanded categorical columns.
         """
-        in_vars = [col.replace("_", " ") if " " not in col else col for col in self.num_cols]
+        in_vars = []
         for col in self.cat_cols:
             n_dims = self.embeddings_config[col][1]
             in_vars.extend(col.replace('_', ' ') + ("["+(len(str(n_dims))*"0"+str(i))[-len(str(n_dims)):]+"]"
                                                     if n_dims > 1 else "") for i in range(n_dims))
+        in_vars += [col.replace("_", " ") if " " not in col else col for col in self.num_cols]
         return in_vars
 
-    def plot(self, folder="./figures", beta=3, mask=False, mode="supervised", scale=0.5, tick=False, sample=False, in_vars=None, out_vars=None, title=None):
+    def plot(self, folder="./figures", beta=3, mask=False, mode="supervised", scale=0.5, tick=False, sample=False,
+             in_vars=None, out_vars=None, title=None):
         """mostly the same as KAN.plot, but with additional linear layer"""
         if not os.path.exists(folder):
             os.makedirs(folder)
@@ -1626,7 +1650,7 @@ class CatLinKAN(KAN):
                     for j in range(self.width[l + 1]):
                         la.append(alpha[l][j][i])
                         ij.append((i, j))
-                la = np.argsort(la) + (len(la) - 1) * 0.06
+                la = np.argsort(la) + (len(la) - 1) * 0.1
                 la /= la.max()
                 for _, (i, j) in enumerate(ij):
                     alpha[l][j][i] = torch.tensor(la[_]).double()
@@ -1639,7 +1663,7 @@ class CatLinKAN(KAN):
                         denom = max(denom, alpha[l][j][i])
                 for i in range(self.width[l]):
                     for j in range(self.width[l + 1]):
-                        alpha[l][j][i] = (alpha[l][j][i] + 0.06) / (denom + 0.06)
+                        alpha[l][j][i] = (alpha[l][j][i] + 0.1) / (denom + 0.1)
 
         # draw skeleton
         width = np.array(self.width)
@@ -1654,7 +1678,8 @@ class CatLinKAN(KAN):
         max_num_weights = np.max(width[:-1] * width[1:])
         y1 = 0.4 / np.maximum(max_num_weights, 3)
 
-        fig, ax = plt.subplots(figsize=(10 * scale, 10 * scale * (neuron_depth + 1) * y0))
+        zz = neuron_depth + 1 if self.include_linear else neuron_depth - 1
+        fig, ax = plt.subplots(figsize=(10 * scale, 10 * scale * zz * y0))
         # fig, ax = plt.subplots(figsize=(5,5*(neuron_depth-1)*y0))
 
         # plot scatters and lines
@@ -1686,38 +1711,45 @@ class CatLinKAN(KAN):
                             color = "black"
                             alpha_mask = 0.
                         if mask == True:
-                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1], color=color, lw=2 * scale, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
-                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next], [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
+                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1],
+                                     color=color, lw=2 * scale,
+                                     alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
+                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
+                                     [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale,
+                                     alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
                         else:
-                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1], color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
-                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next], [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
+                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1],
+                                     color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
+                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
+                                     [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale,
+                                     alpha=alpha[l][j][i] * alpha_mask)
 
         plt.xlim(-0.1, 1.1)
-        plt.ylim(-0.8 * y0, (neuron_depth - 0.95) * y0)
+        plt.ylim((-0.8 if self.include_linear else -0.1) * y0, (neuron_depth - 0.95) * y0)
 
-        if in_vars is None:
-            in_vars = self.get_in_vars()
+        if self.include_linear:
+            if in_vars is None:
+                in_vars = self.get_in_vars()
 
-        pos_color = (0.0, 1.0, 0.0)
-        neg_color = (1.0, 0.0, 0.0)
+            pos_color = (0.0, 1.0, 0.0)
+            neg_color = (1.0, 0.0, 0.0)
 
-        # Plot numeric input and embedding nodes
-        n_in = len(in_vars)
-        n_hidden = width[0]
-        alphaz = np.array([self.hidden[1].weight.data[j, i].item() for i in range(n_in) for j in range(n_hidden)])
-        alphaz /= np.std(alphaz)
-        for i in range(n_in):
-            for j in range(n_hidden):
-                alphz = np.tanh(alphaz[j * n_in + i]) / n_hidden
-                color = pos_color if alphz > 0 else neg_color
-                plt.plot([i / n_in + 0.5 / n_in, 1 / (2 * n_hidden) + j / n_hidden],
-                         [-0.5 * y0, 0], color=color, lw=2 * scale, alpha=abs(alphz))
-            plt.scatter(1 / (2 * n_in) + i / n_in, -0.5 * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color="white")
+            # Plot numeric input and embedding nodes
+            n_in = len(in_vars)
+            n_hidden = width[0]
+            alphaz = np.array([self.hidden.weight.data[j, i].item() for i in range(n_in) for j in range(n_hidden)])
+            for i in range(n_in):
+                for j in range(n_hidden):
+                    alphz = np.tanh(alphaz[j * n_in + i])
+                    color = pos_color if alphz > 0 else neg_color
+                    plt.plot([i / n_in + 0.5 / n_in, 1 / (2 * n_hidden) + j / n_hidden],
+                             [-0.5 * y0, 0], color=color, lw=2 * scale, alpha=abs(alphz))
+                plt.scatter(1 / (2 * n_in) + i / n_in, -0.5 * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color="white")
 
-        n = width[0]
-        spacing = A / n
-        for i in range(n):
-            plt.scatter(1 / (2 * n) + i / n, 0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+            n = width[0]
+            spacing = A / n
+            for i in range(n):
+                plt.scatter(1 / (2 * n) + i / n, 0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
 
         # -- Transformation functions
         DC_to_FC = ax.transData.transform
@@ -1749,16 +1781,28 @@ class CatLinKAN(KAN):
                         newax.imshow(im, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
                     newax.axis('off')
 
+        if not self.include_linear:
+            n = self.width[0]
+            for i in range(n):
+                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), -0.1, in_vars[i], fontsize=20 * scale,
+                                             horizontalalignment='center', verticalalignment='center')
+
         if out_vars != None:
             n = self.width[-1]
             for i in range(n):
-                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), y0 * (len(self.width) - 1) + 0.01, out_vars[i], fontsize=5 * scale, horizontalalignment='center', verticalalignment='center')
+                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), y0 * (len(self.width) - 1) + 0.01, out_vars[i],
+                                             fontsize=5 * scale, horizontalalignment='center',
+                                             verticalalignment='center')
 
         if title != None:
-            plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.03, title, fontsize=20 * scale, horizontalalignment='center', verticalalignment='center')
+            plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.03, title, fontsize=20 * scale,
+                                         horizontalalignment='center', verticalalignment='center')
 
-        for i in range(n_in):
-            plt.gcf().get_axes()[0].text(1 / (2 * n_in) + i / n_in, -0.51 * y0, in_vars[i], fontsize=2.5 * scale, horizontalalignment='right', verticalalignment='center', rotation=90, rotation_mode='anchor')
+        if self.include_linear:
+            for i in range(n_in):
+                plt.gcf().get_axes()[0].text(1 / (2 * n_in) + i / n_in, -0.53 * y0, in_vars[i], fontsize=5 * scale,
+                                             horizontalalignment='right', verticalalignment='center', rotation=90,
+                                             rotation_mode='anchor')
 
     def plot_embeddings(self, cmap="vlag", path=None):
         """
@@ -1768,13 +1812,13 @@ class CatLinKAN(KAN):
         # plot the embeddings in a heatmap
         N, D = zip(*self.embeddings_config.values())
         n, d = max(N), max(D)
-        fig, axes = plt.subplots(len(self.cat_cols), 1, figsize=(d, n / 2), gridspec_kw={
-            "height_ratios": [len(cat_codes_dict_inv[col]) for col in self.cat_cols]})
+        fig, axes = plt.subplots(len(self.cat_cols), 1, figsize=(max(10, d), max(5, n / 2)), gridspec_kw={
+            "height_ratios": [len(cat_codes_dict_inv[col]) for col in self.cat_cols]}, squeeze=False)
         for i, col in enumerate(self.cat_cols):
             data = self.embeddings[col].weight.detach().numpy()
             data = pd.DataFrame(data, index=[cat_codes_dict_inv[col][i] for i in range(data.shape[0])])
             data_norm = (data - data.mean()) / data.std()
-            ax = axes[i]
+            ax = axes[i, 0]
             heatmap(data=data_norm, cmap=cmap, annot=data, fmt=".4f", ax=ax, cbar=False)
             ax.set_ylabel(col)
             ax.set_xlabel("Embedding dimension")
@@ -1784,15 +1828,15 @@ class CatLinKAN(KAN):
         plt.show()
         # plot the embedding in 2d space using PCA or t-SNE
         from sklearn.decomposition import PCA
-        fig, axes = plt.subplots(1, len(self.cat_cols), figsize=(24, 6))
+        fig, axes = plt.subplots(1, len(self.cat_cols), figsize=(len(self.cat_cols) * 20, 20), squeeze=False)
         for i, col in enumerate(self.cat_cols):
             data = self.embeddings[col].weight.detach().numpy()
             pca = PCA(n_components=2)
             data_pca = pca.fit_transform(data)
-            ax = axes[i]
-            ax.scatter(data_pca[:, 0], data_pca[:, 1])
+            ax = axes[0, i]
+            ax.scatter(data_pca[:, 0], data_pca[:, 1], s=1000)
             for j, txt in enumerate([cat_codes_dict_inv[col][i] for i in range(data.shape[0])]):
-                ax.annotate(txt, (data_pca[j, 0], data_pca[j, 1]))
+                ax.annotate(txt, (data_pca[j, 0], data_pca[j, 1]), fontsize=100)
             ax.set_title(col)
         plt.tight_layout()
         if path is not None:
