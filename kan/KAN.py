@@ -1370,12 +1370,12 @@ def train_model(model, params, scorer, lr=1.0, opt="LBFGS", iters=1,
 
                 logits = model.forward(X_test)
                 score = scorer(y_test, logits)
-                if score >= best_score or (score == best_score and training["test_loss"][-1] < best_loss):
+                if score > best_score or (score == best_score and training["test_loss"][-1] < best_loss):
                     best_loss = training["test_loss"][-1]
                     best_score = score
                     best_score_loc = len(training["test_loss"]) - 1
                     model.save_ckpt("best.pth", verbose=False)
-                    print(f"New best score: {score} (iter {i})")
+                    print(f"New best score: {score} (iter {i}) with loss {best_loss}")
 
         except RuntimeError as e:
             print(e)
@@ -1413,7 +1413,7 @@ def metamean(a: np.ndarray, t=1e-5, ignore_harm=True):
         if abs(amean - hmean) < t:
             return gmean
         return metamean(np.array([amean, gmean, hmean]), t, False)
-    
+
 
 def embedded_dropout(embed, dropout=0.1, scale=None):
   """
@@ -1435,7 +1435,8 @@ def embedded_dropout(embed, dropout=0.1, scale=None):
   #   padding_idx, embed.max_norm, embed.norm_type,
   #   embed.scale_grad_by_freq, embed.sparse
   # )
-  X = nn.Embedding(embed.num_embeddings, embed.embedding_dim, _weight=masked_embed_weight)
+  X = nn.Embedding(embed.num_embeddings, embed.embedding_dim, _weight=masked_embed_weight,
+                   scale_grad_by_freq=embed.scale_grad_by_freq)
   return X
 
 
@@ -1447,6 +1448,172 @@ class Identity(nn.Linear):
 
     def forward(self, x):
         return x
+
+
+def plot_figs(model, tick, sample, scale, folder):
+    for l in range(len(model.width) - 1):
+        w_large = 2.0
+        for i in range(model.width[l]):
+            for j in range(model.width[l + 1]):
+                rank = torch.argsort(model.acts[l][:, i])
+                fig, ax = plt.subplots(figsize=(w_large, w_large))
+
+                num = rank.shape[0]
+
+                symbol_mask = model.symbolic_fun[l].mask[j][i]
+                numerical_mask = model.act_fun[l].mask.reshape(model.width[l + 1], model.width[l])[j][i]
+                if symbol_mask > 0. and numerical_mask > 0.:
+                    color = 'purple'
+                    alpha_mask = 1
+                if symbol_mask > 0. and numerical_mask == 0.:
+                    color = "red"
+                    alpha_mask = 1
+                if symbol_mask == 0. and numerical_mask > 0.:
+                    color = "white"
+                    alpha_mask = 1
+                if symbol_mask == 0. and numerical_mask == 0.:
+                    color = "black"
+                    alpha_mask = 0
+
+                if tick == True:
+                    ax.tick_params(axis="y", direction="in", pad=-22, labelsize=50)
+                    ax.tick_params(axis="x", direction="in", pad=-15, labelsize=50)
+                    x_min, x_max, y_min, y_max = model.get_range(l, i, j, verbose=False)
+                    plt.xticks([x_min, x_max], ['%2.f' % x_min, '%2.f' % x_max])
+                    plt.yticks([y_min, y_max], ['%2.f' % y_min, '%2.f' % y_max])
+                else:
+                    plt.xticks([])
+                    plt.yticks([])
+                if alpha_mask == 1:
+                    plt.gca().patch.set_edgecolor('white')
+                else:
+                    plt.gca().patch.set_edgecolor('black')
+                plt.gca().patch.set_linewidth(1.5)
+                # plt.axis('off')
+
+                plt.plot(model.acts[l][:, i][rank].cpu().detach().numpy(),
+                         model.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color, lw=5)
+                if sample == True:
+                    plt.scatter(model.acts[l][:, i][rank].cpu().detach().numpy(),
+                                model.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color,
+                                s=400 * scale ** 2)
+                plt.gca().spines[:].set_color(color)
+
+                lock_id = model.act_fun[l].lock_id[j * model.width[l] + i].long().item()
+                if lock_id > 0:
+                    # im = plt.imread(f'{folder}/lock.png')
+                    im = plt.imread(f'{RESOURCE_DIR}/lock.png')
+                    newax = fig.add_axes([0.15, 0.7, 0.15, 0.15])
+                    plt.text(500, 400, lock_id, fontsize=15)
+                    newax.imshow(im)
+                    newax.axis('off')
+
+                plt.savefig(f'{folder}/sp_{l}_{i}_{j}.png', bbox_inches="tight", dpi=400)
+                plt.close()
+
+
+def get_alpha(model, beta, mode):
+    def score2alpha(score):
+        return score if beta is None else np.tanh(beta * score)
+
+    if mode == "supervised":
+        alpha = [score2alpha(score.cpu().detach().numpy()) for score in model.acts_scale]
+    elif mode == "unsupervised":
+        alpha = [score2alpha(score.cpu().detach().numpy()) for score in model.acts_scale_std]
+    else:
+        raise ValueError("mode should be supervised or unsupervised")
+
+    if beta is None:
+        # discretize alpha by layer
+        for l in range(len(model.width) - 1):
+            la = []
+            ij = []
+            for i in range(model.width[l]):
+                for j in range(model.width[l + 1]):
+                    la.append(alpha[l][j][i])
+                    ij.append((i, j))
+            la = np.argsort(la) + (len(la) - 1) * 0.1
+            la /= la.max()
+            for _, (i, j) in enumerate(ij):
+                alpha[l][j][i] = torch.tensor(la[_]).double()
+    else:
+        # normalize by layer
+        for l in range(len(model.width) - 1):
+            denom = 0
+            for i in range(model.width[l]):
+                for j in range(model.width[l + 1]):
+                    denom = max(denom, alpha[l][j][i])
+            for i in range(model.width[l]):
+                for j in range(model.width[l + 1]):
+                    alpha[l][j][i] = (alpha[l][j][i] + 0.1) / (denom + 0.1)
+
+    return alpha
+
+
+def plot_scatters_and_lines(model, l, width, A, y0, y1, min_spacing, scale, neuron_depth, mask, alpha, offset=0):
+    n = width[l]
+    spacing = A / n
+    for i in range(n):
+        plt.scatter(1 / (2 * n) + i / n, (l + offset) * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+
+        if l < neuron_depth - 1:
+            # plot connections
+            n_next = width[l + 1]
+            N = n * n_next
+            for j in range(n_next):
+                id_ = i * n_next + j
+
+                symbol_mask = model.symbolic_fun[l].mask[j][i]
+                numerical_mask = model.act_fun[l].mask.reshape(model.width[l + 1], model.width[l])[j][i]
+                if symbol_mask == 1. and numerical_mask == 1.:
+                    color = 'purple'
+                    alpha_mask = 1.
+                if symbol_mask == 1. and numerical_mask == 0.:
+                    color = "red"
+                    alpha_mask = 1.
+                if symbol_mask == 0. and numerical_mask == 1.:
+                    color = "white"
+                    alpha_mask = 1.
+                if symbol_mask == 0. and numerical_mask == 0.:
+                    color = "black"
+                    alpha_mask = 0.
+                if mask == True:
+                    plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [(l + offset) * y0, ((l + offset) + 1 / 2) * y0 - y1],
+                             color=color, lw=2 * scale,
+                             alpha=alpha[l][j][i] * model.mask[l][i].item() * model.mask[l + 1][j].item())
+                    plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
+                             [((l + offset) + 1 / 2) * y0 + y1, ((l + offset) + 1) * y0], color=color, lw=2 * scale,
+                             alpha=alpha[l][j][i] * model.mask[l][i].item() * model.mask[l + 1][j].item())
+                else:
+                    plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [(l + offset) * y0, ((l + offset) + 1 / 2) * y0 - y1],
+                             color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
+                    plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
+                             [((l + offset) + 1 / 2) * y0 + y1, ((l + offset) + 1) * y0], color=color, lw=2 * scale,
+                             alpha=alpha[l][j][i] * alpha_mask)
+
+
+def plot_spines(model, neuron_depth, width, folder, fig, DC_to_NFC, y0, y1, alpha, mask, offset=0):
+    for l in range(neuron_depth - 1):
+        n = width[l]
+        for i in range(n):
+            n_next = width[l + 1]
+            N = n * n_next
+            for j in range(n_next):
+                id_ = i * n_next + j
+                im = plt.imread(f'{folder}/sp_{l}_{i}_{j}.png')
+                left = DC_to_NFC([1 / (2 * N) + id_ / N - y1, 0])[0]
+                right = DC_to_NFC([1 / (2 * N) + id_ / N + y1, 0])[0]
+                bottom = DC_to_NFC([offset * y0, ((l + offset) + 1 / 2) * y0 - y1])[1]
+                up = DC_to_NFC([offset * y0, ((l + offset) + 1 / 2) * y0 + y1])[1]
+                newax = fig.add_axes([left, bottom, right - left, up - bottom])
+                # newax = fig.add_axes([1/(2*N)+id_/N-y1, (l+1/2)*y0-y1, y1, y1], anchor='NE')
+                if mask == False:
+                    newax.imshow(im, alpha=alpha[l][j][i])
+                else:
+                    ### make sure to run model.prune() first to compute mask ###
+                    newax.imshow(im, alpha=alpha[l][j][i] * model.mask[l][i].item() * model.mask[l + 1][j].item())
+                newax.axis('off')
+
 
 class CatLinKAN(KAN):
     def __init__(self, X_train: pd.DataFrame, cat_dropout=0.0, include_linear=False, **kwargs):
@@ -1470,10 +1637,21 @@ class CatLinKAN(KAN):
         self.cat_dropout = cat_dropout
         self._init_columns(X_train)
         self._get_embeddings_config()
-        if not include_linear:
-            n_num, n_cat = len(self.num_cols), sum(n for _, n in self.embeddings_config.values())
-            kwargs["width"] = [n_cat + n_num] + kwargs["width"]
+        self.n_num, self.n_cat = len(self.num_cols), sum(n for _, n in self.embeddings_config.values())
+        width = [self.n_cat + self.n_num] + kwargs["width"]
+        print(width)
+        if include_linear:
+            kwargs["width"] = width[2:]
+        else:
+            kwargs["width"] = width
         super().__init__(**kwargs)
+        if include_linear:
+            self.width_init = width[:2]
+            mini_kan_kwargs = kwargs.copy()
+            mini_kan_kwargs["width"] = self.width_init
+            self.mini_kan = KAN(**mini_kan_kwargs)
+        else:
+            self.width_init = []
         self._init_layers()
 
     def _init_columns(self, X_train: pd.DataFrame):
@@ -1498,7 +1676,7 @@ class CatLinKAN(KAN):
     def _init_layers(self):
         """Initializes the embeddings, batchnorm, and hidden layers of the model."""
         embed = nn.ModuleDict({
-            col: embedded_dropout(nn.Embedding(num_embeddings, embedding_dim),
+            col: embedded_dropout(nn.Embedding(num_embeddings, embedding_dim, scale_grad_by_freq=True),
                                   dropout=self.cat_dropout)
             for col, (num_embeddings, embedding_dim) in self.embeddings_config.items()
         })
@@ -1512,9 +1690,8 @@ class CatLinKAN(KAN):
         self.embeddings = embed
 
         if self.include_linear:
-            n_num, n_cat = len(self.num_cols), sum(embed_dim for _, embed_dim in self.embeddings_config.values())
-            self.bn = nn.BatchNorm1d(n_num, affine=True)
-            self.hidden = nn.utils.parametrizations.weight_norm(nn.Linear(n_num + n_cat, self.width[0], bias=False))
+            self.hidden = nn.utils.parametrizations.weight_norm(
+                nn.Linear(self.width_init[1], self.width[0], bias=False))
 
     def init_data(self, X: pd.DataFrame, y: pd.Series | None = None):
         """
@@ -1539,13 +1716,11 @@ class CatLinKAN(KAN):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for emb in self.embeddings.values():
             emb.weight.data[0] = torch.mean(emb.weight.data[1:], dim=0)
-
         cat_tensor = torch.cat([self.embeddings[col](x[:, idx].long()) for idx, col in enumerate(self.cat_cols)], dim=1)
         num_tensor = x[:, len(self.cat_cols):]
-        if self.include_linear:
-            num_tensor = self.bn(num_tensor)
         out_tensor = torch.cat([cat_tensor, num_tensor], dim=1)
         if self.include_linear:
+            out_tensor = self.mini_kan(out_tensor)
             out_tensor = self.hidden(out_tensor)
         return super().forward(out_tensor)
 
@@ -1569,104 +1744,19 @@ class CatLinKAN(KAN):
         """mostly the same as KAN.plot, but with additional linear layer"""
         if not os.path.exists(folder):
             os.makedirs(folder)
+        if not os.path.exists(folder + "_"):
+            os.makedirs(folder + "_")
         plt.style.use('dark_background')
-        depth = len(self.width) - 1
-        for l in range(depth):
-            w_large = 2.0
-            for i in range(self.width[l]):
-                for j in range(self.width[l + 1]):
-                    rank = torch.argsort(self.acts[l][:, i])
-                    fig, ax = plt.subplots(figsize=(w_large, w_large))
+        plot_figs(self, tick, sample, scale, folder)
+        alpha = get_alpha(self, beta, mode)
+        if self.include_linear:
+            plot_figs(self.mini_kan, tick, sample, scale, folder + "_")
+            alpha_init = get_alpha(self.mini_kan, beta, mode)
 
-                    num = rank.shape[0]
-
-                    symbol_mask = self.symbolic_fun[l].mask[j][i]
-                    numerical_mask = self.act_fun[l].mask.reshape(self.width[l + 1], self.width[l])[j][i]
-                    if symbol_mask > 0. and numerical_mask > 0.:
-                        color = 'purple'
-                        alpha_mask = 1
-                    if symbol_mask > 0. and numerical_mask == 0.:
-                        color = "red"
-                        alpha_mask = 1
-                    if symbol_mask == 0. and numerical_mask > 0.:
-                        color = "white"
-                        alpha_mask = 1
-                    if symbol_mask == 0. and numerical_mask == 0.:
-                        color = "black"
-                        alpha_mask = 0
-
-                    if tick == True:
-                        ax.tick_params(axis="y", direction="in", pad=-22, labelsize=50)
-                        ax.tick_params(axis="x", direction="in", pad=-15, labelsize=50)
-                        x_min, x_max, y_min, y_max = self.get_range(l, i, j, verbose=False)
-                        plt.xticks([x_min, x_max], ['%2.f' % x_min, '%2.f' % x_max])
-                        plt.yticks([y_min, y_max], ['%2.f' % y_min, '%2.f' % y_max])
-                    else:
-                        plt.xticks([])
-                        plt.yticks([])
-                    if alpha_mask == 1:
-                        plt.gca().patch.set_edgecolor('white')
-                    else:
-                        plt.gca().patch.set_edgecolor('black')
-                    plt.gca().patch.set_linewidth(1.5)
-                    # plt.axis('off')
-
-                    plt.plot(self.acts[l][:, i][rank].cpu().detach().numpy(),
-                             self.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color, lw=5)
-                    if sample == True:
-                        plt.scatter(self.acts[l][:, i][rank].cpu().detach().numpy(),
-                                    self.spline_postacts[l][:, j, i][rank].cpu().detach().numpy(), color=color,
-                                    s=400 * scale ** 2)
-                    plt.gca().spines[:].set_color(color)
-
-                    lock_id = self.act_fun[l].lock_id[j * self.width[l] + i].long().item()
-                    if lock_id > 0:
-                        # im = plt.imread(f'{folder}/lock.png')
-                        im = plt.imread(f'{RESOURCE_DIR}/lock.png')
-                        newax = fig.add_axes([0.15, 0.7, 0.15, 0.15])
-                        plt.text(500, 400, lock_id, fontsize=15)
-                        newax.imshow(im)
-                        newax.axis('off')
-
-                    plt.savefig(f'{folder}/sp_{l}_{i}_{j}.png', bbox_inches="tight", dpi=400)
-                    plt.close()
-
-        def score2alpha(score):
-            return score if beta is None else np.tanh(beta * score)
-
-        if mode == "supervised":
-            alpha = [score2alpha(score.cpu().detach().numpy()) for score in self.acts_scale]
-        elif mode == "unsupervised":
-            alpha = [score2alpha(score.cpu().detach().numpy()) for score in self.acts_scale_std]
-        else:
-            raise ValueError("mode should be supervised or unsupervised")
-
-        if beta is None:
-            # discretize alpha by layer
-            for l in range(depth):
-                la = []
-                ij = []
-                for i in range(self.width[l]):
-                    for j in range(self.width[l + 1]):
-                        la.append(alpha[l][j][i])
-                        ij.append((i, j))
-                la = np.argsort(la) + (len(la) - 1) * 0.1
-                la /= la.max()
-                for _, (i, j) in enumerate(ij):
-                    alpha[l][j][i] = torch.tensor(la[_]).double()
-        else:
-            # normalize by layer
-            for l in range(depth):
-                denom = 0
-                for i in range(self.width[l]):
-                    for j in range(self.width[l + 1]):
-                        denom = max(denom, alpha[l][j][i])
-                for i in range(self.width[l]):
-                    for j in range(self.width[l + 1]):
-                        alpha[l][j][i] = (alpha[l][j][i] + 0.1) / (denom + 0.1)
+        total_width = self.width_init + self.width
 
         # draw skeleton
-        width = np.array(self.width)
+        width = np.array(total_width)
         A = 1
         y0 = 0.4  # 0.4
 
@@ -1678,78 +1768,38 @@ class CatLinKAN(KAN):
         max_num_weights = np.max(width[:-1] * width[1:])
         y1 = 0.4 / np.maximum(max_num_weights, 3)
 
-        zz = neuron_depth + 1 if self.include_linear else neuron_depth - 1
-        fig, ax = plt.subplots(figsize=(10 * scale, 10 * scale * zz * y0))
+        fig, ax = plt.subplots(figsize=(10 * scale, 10 * scale * neuron_depth * y0))
         # fig, ax = plt.subplots(figsize=(5,5*(neuron_depth-1)*y0))
 
         # plot scatters and lines
-        for l in range(neuron_depth):
-            n = width[l]
-            spacing = A / n
-            for i in range(n):
-                plt.scatter(1 / (2 * n) + i / n, l * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+        for l in range(len(self.width)):
+            plot_scatters_and_lines(self, l, self.width, A, y0, y1, min_spacing, scale, len(self.width), mask, alpha,
+                                    1.5 if self.include_linear else 0)
 
-                if l < neuron_depth - 1:
-                    # plot connections
-                    n_next = width[l + 1]
-                    N = n * n_next
-                    for j in range(n_next):
-                        id_ = i * n_next + j
+        # plot mini-kan
+        if self.include_linear:
+            plot_scatters_and_lines(self.mini_kan, 0, self.width_init, A, y0, y1, min_spacing, scale, 2, mask, alpha_init)
+            plot_scatters_and_lines(self.mini_kan, 1, self.width_init, A, y0, y1, min_spacing, scale, 2, mask, alpha_init)
 
-                        symbol_mask = self.symbolic_fun[l].mask[j][i]
-                        numerical_mask = self.act_fun[l].mask.reshape(self.width[l + 1], self.width[l])[j][i]
-                        if symbol_mask == 1. and numerical_mask == 1.:
-                            color = 'purple'
-                            alpha_mask = 1.
-                        if symbol_mask == 1. and numerical_mask == 0.:
-                            color = "red"
-                            alpha_mask = 1.
-                        if symbol_mask == 0. and numerical_mask == 1.:
-                            color = "white"
-                            alpha_mask = 1.
-                        if symbol_mask == 0. and numerical_mask == 0.:
-                            color = "black"
-                            alpha_mask = 0.
-                        if mask == True:
-                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1],
-                                     color=color, lw=2 * scale,
-                                     alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
-                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
-                                     [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale,
-                                     alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
-                        else:
-                            plt.plot([1 / (2 * n) + i / n, 1 / (2 * N) + id_ / N], [l * y0, (l + 1 / 2) * y0 - y1],
-                                     color=color, lw=2 * scale, alpha=alpha[l][j][i] * alpha_mask)
-                            plt.plot([1 / (2 * N) + id_ / N, 1 / (2 * n_next) + j / n_next],
-                                     [(l + 1 / 2) * y0 + y1, (l + 1) * y0], color=color, lw=2 * scale,
-                                     alpha=alpha[l][j][i] * alpha_mask)
+        plt.xlim(-0.03, 1.1)
+        plt.ylim(-0.3 * y0, (neuron_depth - (1.15 if self.include_linear else 0.95)) * y0)
 
-        plt.xlim(-0.1, 1.1)
-        plt.ylim((-0.8 if self.include_linear else -0.1) * y0, (neuron_depth - 0.95) * y0)
+        if in_vars is None:
+            in_vars = self.get_in_vars()
 
         if self.include_linear:
-            if in_vars is None:
-                in_vars = self.get_in_vars()
-
             pos_color = (0.0, 1.0, 0.0)
             neg_color = (1.0, 0.0, 0.0)
-
             # Plot numeric input and embedding nodes
-            n_in = len(in_vars)
-            n_hidden = width[0]
-            alphaz = np.array([self.hidden.weight.data[j, i].item() for i in range(n_in) for j in range(n_hidden)])
+            n_in = total_width[1]
+            n_out = total_width[2]
+            alphaz = np.array([self.hidden.weight.data[j, i].item() for i in range(n_in) for j in range(n_out)])
             for i in range(n_in):
-                for j in range(n_hidden):
+                for j in range(n_out):
                     alphz = np.tanh(alphaz[j * n_in + i])
                     color = pos_color if alphz > 0 else neg_color
-                    plt.plot([i / n_in + 0.5 / n_in, 1 / (2 * n_hidden) + j / n_hidden],
-                             [-0.5 * y0, 0], color=color, lw=2 * scale, alpha=abs(alphz))
-                plt.scatter(1 / (2 * n_in) + i / n_in, -0.5 * y0, s=min_spacing ** 2 * 5000 * scale ** 2, color="white")
-
-            n = width[0]
-            spacing = A / n
-            for i in range(n):
-                plt.scatter(1 / (2 * n) + i / n, 0, s=min_spacing ** 2 * 5000 * scale ** 2, color='white')
+                    plt.plot([i / n_in + 0.5 / n_in, 1 / (2 * n_out) + j / n_out],
+                             [y0, 1.5 * y0], color=color, lw=2 * scale, alpha=abs(alphz))
 
         # -- Transformation functions
         DC_to_FC = ax.transData.transform
@@ -1760,49 +1810,31 @@ class CatLinKAN(KAN):
         plt.axis('off')
 
         # plot splines
-        for l in range(neuron_depth - 1):
-            n = width[l]
-            for i in range(n):
-                n_next = width[l + 1]
-                N = n * n_next
-                for j in range(n_next):
-                    id_ = i * n_next + j
-                    im = plt.imread(f'{folder}/sp_{l}_{i}_{j}.png')
-                    left = DC_to_NFC([1 / (2 * N) + id_ / N - y1, 0])[0]
-                    right = DC_to_NFC([1 / (2 * N) + id_ / N + y1, 0])[0]
-                    bottom = DC_to_NFC([0, (l + 1 / 2) * y0 - y1])[1]
-                    up = DC_to_NFC([0, (l + 1 / 2) * y0 + y1])[1]
-                    newax = fig.add_axes([left, bottom, right - left, up - bottom])
-                    # newax = fig.add_axes([1/(2*N)+id_/N-y1, (l+1/2)*y0-y1, y1, y1], anchor='NE')
-                    if mask == False:
-                        newax.imshow(im, alpha=alpha[l][j][i])
-                    else:
-                        ### make sure to run model.prune() first to compute mask ###
-                        newax.imshow(im, alpha=alpha[l][j][i] * self.mask[l][i].item() * self.mask[l + 1][j].item())
-                    newax.axis('off')
+        plot_spines(self, len(self.width), self.width, folder, fig, DC_to_NFC, y0, y1, alpha, mask,
+                    1.5 if self.include_linear else 0)
+        if self.include_linear:
+            plot_spines(self.mini_kan, 2, self.width_init, folder + "_", fig, DC_to_NFC, y0, y1, alpha_init, mask)
 
         if not self.include_linear:
             n = self.width[0]
             for i in range(n):
-                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), -0.1, in_vars[i], fontsize=20 * scale,
+                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), -0.01, in_vars[i], fontsize=5 * scale,
                                              horizontalalignment='center', verticalalignment='center')
 
         if out_vars != None:
             n = self.width[-1]
             for i in range(n):
-                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), y0 * (len(self.width) - 1) + 0.01, out_vars[i],
-                                             fontsize=5 * scale, horizontalalignment='center',
-                                             verticalalignment='center')
+                plt.gcf().get_axes()[0].text(1 / (2 * (n)) + i / (n), y0 * (len(total_width) - 1.5 + (not self.include_linear) / 2) + 0.01, out_vars[i],
+                                             fontsize=5 * scale, horizontalalignment='center', verticalalignment='center')
 
         if title != None:
-            plt.gcf().get_axes()[0].text(0.5, y0 * (len(self.width) - 1) + 0.03, title, fontsize=20 * scale,
+            plt.gcf().get_axes()[0].text(0.5, y0 * (len(total_width) - 1.5) + 0.03 + y0 * (not self.include_linear) / 2, title, fontsize=20 * scale,
                                          horizontalalignment='center', verticalalignment='center')
 
         if self.include_linear:
-            for i in range(n_in):
-                plt.gcf().get_axes()[0].text(1 / (2 * n_in) + i / n_in, -0.53 * y0, in_vars[i], fontsize=5 * scale,
-                                             horizontalalignment='right', verticalalignment='center', rotation=90,
-                                             rotation_mode='anchor')
+            for i in range(len(in_vars)):
+                plt.gcf().get_axes()[0].text(1 / (2 * len(in_vars)) + i / len(in_vars), -0.03 * y0, in_vars[i],
+                                             fontsize=5 * scale, horizontalalignment='right', verticalalignment='center', rotation=90, rotation_mode='anchor')
 
     def plot_embeddings(self, cmap="vlag", path=None):
         """
@@ -1810,9 +1842,9 @@ class CatLinKAN(KAN):
         """
         cat_codes_dict_inv = {col: {v: k for k, v in self.cat_code_dict[col].items()} for col in self.cat_code_dict}
         # plot the embeddings in a heatmap
-        N, D = zip(*self.embeddings_config.values())
-        n, d = max(N), max(D)
-        fig, axes = plt.subplots(len(self.cat_cols), 1, figsize=(max(10, d), max(5, n / 2)), gridspec_kw={
+        C, D = zip(*self.embeddings_config.values())
+        c, d = max(C), max(D)
+        fig, axes = plt.subplots(len(self.cat_cols), 1, figsize=(max(10, d), max(c, c / 2)), gridspec_kw={
             "height_ratios": [len(cat_codes_dict_inv[col]) for col in self.cat_cols]}, squeeze=False)
         for i, col in enumerate(self.cat_cols):
             data = self.embeddings[col].weight.detach().numpy()
